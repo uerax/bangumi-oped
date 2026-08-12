@@ -299,7 +299,7 @@ def main():
     ongoing_state = state.get("ongoing", {})
     processed_count = 0
 
-    for item in items:
+    for item in reversed(items):
         elapsed_seconds = time.time() - start_time
         if (MAX_PROCESS_REQUESTS > 0 and global_api_requests >= MAX_PROCESS_REQUESTS) or \
            (MAX_RUN_TIME_SECONDS > 0 and elapsed_seconds >= MAX_RUN_TIME_SECONDS):
