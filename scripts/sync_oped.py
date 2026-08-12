@@ -15,6 +15,7 @@ STATE_FILE = ".state.json"
 USER_AGENT = "Mozilla/5.0 (compatible; bangumi-oped-sync/1.0)"
 REQUEST_DELAY = float(os.environ.get("REQUEST_DELAY", "0.2"))
 MAX_RETRIES = 5
+MAX_CONSECUTIVE_MISSES = 3
 
 FORBIDDEN_CHARS = {
     ":": "：",
@@ -169,22 +170,25 @@ def process_anime(subject_id: str, mal_id: int, title: str, start_ep: int = 1) -
 
     current_ep = start_ep
     max_ep_found = max(episodes.keys(), default=0)
+    consecutive_misses = 0
 
     while True:
         aniskip_data = fetch_aniskip_episode(mal_id, current_ep)
         time.sleep(REQUEST_DELAY)  # Rate limiting delay between requests
 
         if not aniskip_data:
-            # If 404 or no data, stop probing
-            break
-
-        op_s, op_e, ed_s, ed_e = parse_skip_times(aniskip_data)
-        if (op_s, op_e, ed_s, ed_e) != (-1, -1, -1, -1):
-            episodes[current_ep] = format_episode_line(current_ep, op_s, op_e, ed_s, ed_e)
-            max_ep_found = max(max_ep_found, current_ep)
-        elif current_ep in episodes:
-            # Keep existing entry if API returned empty result but local file had it
-            pass
+            consecutive_misses += 1
+            if consecutive_misses >= MAX_CONSECUTIVE_MISSES:
+                break
+        else:
+            consecutive_misses = 0
+            op_s, op_e, ed_s, ed_e = parse_skip_times(aniskip_data)
+            if (op_s, op_e, ed_s, ed_e) != (-1, -1, -1, -1):
+                episodes[current_ep] = format_episode_line(current_ep, op_s, op_e, ed_s, ed_e)
+                max_ep_found = max(max_ep_found, current_ep)
+            elif current_ep in episodes:
+                # Keep existing entry if API returned empty result but local file had it
+                pass
 
         current_ep += 1
 
