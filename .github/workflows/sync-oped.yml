@@ -2,7 +2,9 @@ name: Sync OP/ED Data
 
 on:
   schedule:
-    - cron: '0 0 * * 0'
+    # Run every 30 minutes during initial deployment sweep (~27 runs total to complete all ~8,100 subjects in ~13.5 hours)
+    # Change back to weekly '0 0 * * 0' after initial sweep completes.
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 permissions:

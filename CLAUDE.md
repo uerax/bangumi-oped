@@ -4,21 +4,40 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-`bangumi-oped` is a data repository collecting anime Opening (OP) and Ending (ED) timestamps, indexed by [Bangumi](https://bgm.tv) Subject ID. It is designed for consumption by third-party players, plugins, and tools to automate OP/ED skipping.
+`bangumi-oped` is a data repository collecting anime Opening (OP) and Ending (ED) timestamps, indexed by [Bangumi](https://bgm.tv) Subject ID. It provides standardized timestamp data for third-party media players, plugins, and skipping extensions.
 
-## Repository Structure & Data Conventions
+## Development & Execution Commands
 
-This repository contains no build, lint, or test scripts. It consists strictly of data folders organized by Bangumi Subject ID.
+There are no formal build, lint, or test suites. The sync pipeline uses standard Python 3.
 
-### Directory Organization
-Each anime entry is stored in a folder named after its Bangumi Subject ID (e.g. `622206/`):
-- `<Subject_ID>/<Subject_ID>.txt`: Data file containing episode timestamps.
-- `<Subject_ID>/<Anime Title>`: An **empty** file named with the anime title (preferably Chinese title from bgm.tv, or original title if no Chinese title exists) for human identification. Parsers must ignore this file. Forbidden filesystem characters (`: / \ ? * " < > |`) should be replaced with full-width characters or omitted.
+- **Run Data Sync**: `python scripts/sync_oped.py`
+- **Adjust Rate Limit Delay**: `REQUEST_DELAY=0.1 python scripts/sync_oped.py` (Default: `0.05` seconds between requests)
+
+## Code Architecture & Sync Pipeline
+
+The repository combines static data folders with an automated sync script (`scripts/sync_oped.py`) triggered weekly via GitHub Actions (`.github/workflows/sync-oped.yml`).
+
+### External Data Flow
+1. **`bangumi-data` CDN** (`unpkg.com`): Maps Bangumi Subject IDs to MyAnimeList (MAL) IDs.
+2. **Bangumi API** (`api.bgm.tv`): Fetches total episode count per subject.
+3. **AniSkip API** (`api.aniskip.com`): Retrieves OP/ED skip timestamp intervals by MAL ID and episode number.
+
+### Lifecycle & State Logic (`scripts/sync_oped.py`)
+- **Completed Anime (Sealed)**: Anime whose end date was over 90 days ago and already have a data file present are skipped entirely.
+- **Ongoing / Cooldown Anime**: Anime currently airing or ended within the 90-day cooldown window are swept (`1` to `total_eps`) on each run to pick up newly added skip times.
+- **State Persistence**: Active ongoing items and `bangumi-data` hashes are tracked in `.state.json`.
+- **Error Recovery**: API calls retry up to 5 times with exponential backoff on HTTP 429/5xx errors. Unrecoverable API failures trigger `sys.exit(1)` to prevent corrupting state or making partial commits.
+
+## Repository Data Conventions
+
+### Directory & File Structure
+Each anime entry is stored in `<Subject_ID>/`:
+- `<Subject_ID>/<Subject_ID>.txt`: Semicolon-delimited timestamp data file.
+- `<Subject_ID>/<Anime Title>`: Empty marker file using Chinese title (or original title if Chinese is unavailable) for human readability. Forbidden path characters (`: / \ ? * " < > |`) are converted to full-width characters or omitted. Parsers must ignore this marker file.
 
 ### Timestamp Format (`<Subject_ID>.txt`)
-- Line-separated entries with 5 semicolon-delimited (`;`) fields:
-  `Episode;OP_Start;OP_End;ED_Start;ED_End`
-- All timestamps are in seconds (integer).
-- **Sentinel Value (`-1`)**: Missing OP or ED fields must explicitly use `-1` (e.g., `2;-1;-1;2400;2500`). Empty fields or using `0` for missing segments are not permitted (`0` is a valid timestamp).
-- **Episode Numbering**: Episodes must start from `1` for each Subject ID, even if bgm.tv lists continuous episode numbers for sequel seasons.
-- **Parsing Rules**: Parsers evaluate lines by explicit episode number regardless of line order. If duplicate episode numbers exist in a file, the first entry takes precedence.
+- Line format: `Episode;OP_Start;OP_End;ED_Start;ED_End` (5 semicolon-delimited fields).
+- All timestamps are rounded integer seconds.
+- **Sentinel Value (`-1`)**: Missing OP or ED fields explicitly use `-1` (e.g. `2;-1;-1;2400;2500`). `0` is a valid timestamp and cannot be used for missing segments.
+- **Episode Numbering**: Numbering must start from `1` for each Subject ID, regardless of franchise-wide episode counts.
+- **Parsing Rules**: Evaluated by explicit episode number; duplicate episode entries prioritize the first occurrence.

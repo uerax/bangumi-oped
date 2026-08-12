@@ -14,9 +14,13 @@ BANGUMI_EPISODES_API = "https://api.bgm.tv/v0/episodes?subject_id={bgm_id}&type=
 ANISKIP_URL = "https://api.aniskip.com/v2/skip-times/{mal_id}/{ep}?types=op&types=ed&episodeLength=0"
 STATE_FILE = ".state.json"
 USER_AGENT = "Mozilla/5.0 (compatible; bangumi-oped-sync/1.0)"
-# Default to 0.05 for fast initial sync; can be overridden in env
 REQUEST_DELAY = float(os.environ.get("REQUEST_DELAY", "0.05"))
 MAX_RETRIES = 5
+TIMEOUT_SECONDS = 15
+# Set MAX_PROCESS_ITEMS to batch initial full sync and avoid Action execution timeout (0 means no limit)
+MAX_PROCESS_ITEMS = int(os.environ.get("MAX_PROCESS_ITEMS", "300"))
+# Minimum hours between checking the same ongoing anime during catch-up sweeps
+ONGOING_CHECK_INTERVAL_HOURS = int(os.environ.get("ONGOING_CHECK_INTERVAL_HOURS", "24"))
 
 FORBIDDEN_CHARS = {
     ":": "：",
@@ -57,31 +61,58 @@ def save_state(state: dict):
 def fetch_bangumi_data() -> tuple[dict, str]:
     print("Fetching bangumi-data...")
     req = urllib.request.Request(BANGUMI_DATA_URL, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req) as res:
-        content = res.read()
-        data_hash = hashlib.sha256(content).hexdigest()
-        data = json.loads(content.decode("utf-8"))
-        return data, data_hash
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as res:
+                content = res.read()
+                data_hash = hashlib.sha256(content).hexdigest()
+                data = json.loads(content.decode("utf-8"))
+                return data, data_hash
+        except Exception as e:
+            wait_time = (2 ** attempt) + (attempt * 0.5)
+            print(f"Error fetching bangumi-data (attempt {attempt}/{MAX_RETRIES}): {e}. Retrying in {wait_time:.1f}s...")
+            time.sleep(wait_time)
+
+    print(f"Fatal: Failed to fetch bangumi-data after {MAX_RETRIES} retries. Aborting action.")
+    sys.exit(1)
 
 
 def is_anime_ended(end_str: str) -> bool:
     """
     Returns True ONLY if the anime ended more than 90 days ago.
-    Otherwise (ongoing, or ended recently), returns False (treat as ongoing/cooling down).
+    Otherwise (ongoing, ended recently, or unknown/unparseable date), returns False.
     """
     if not end_str:
         return False
     try:
-        end_str_clean = end_str.replace("Z", "+00:00")
-        end_date = datetime.fromisoformat(end_str_clean)
+        end_clean = end_str.replace("Z", "+00:00").strip()
+        if len(end_clean) == 4 and end_clean.isdigit():
+            end_clean += "-01-01"
+        elif len(end_clean) == 7 and re.match(r"^\d{4}-\d{2}$", end_clean):
+            end_clean += "-01"
+
+        end_date = datetime.fromisoformat(end_clean)
         if end_date.tzinfo is None:
             end_date = end_date.replace(tzinfo=timezone.utc)
 
-        # Calculate the sealing threshold: 90 days ago
         seal_date = datetime.now(timezone.utc) - timedelta(days=90)
         return end_date <= seal_date
+    except Exception as e:
+        print(f"Warning: Failed to parse end date '{end_str}': {e}. Treating as ongoing/cooldown.")
+        return False
+
+
+def is_ongoing_recently_checked(ongoing_info: dict, max_hours: int) -> bool:
+    if not ongoing_info or "last_check" not in ongoing_info:
+        return False
+    try:
+        last_check_str = ongoing_info["last_check"]
+        last_check_dt = datetime.fromisoformat(last_check_str)
+        if last_check_dt.tzinfo is None:
+            last_check_dt = last_check_dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - last_check_dt) < timedelta(hours=max_hours)
     except Exception:
-        return True
+        return False
 
 
 def fetch_bangumi_total_episodes(bgm_id: str) -> int:
@@ -91,7 +122,7 @@ def fetch_bangumi_total_episodes(bgm_id: str) -> int:
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            with urllib.request.urlopen(req) as res:
+            with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as res:
                 data = json.loads(res.read().decode("utf-8"))
                 return int(data.get("total", 0))
         except urllib.error.HTTPError as e:
@@ -104,9 +135,10 @@ def fetch_bangumi_total_episodes(bgm_id: str) -> int:
             else:
                 print(f"Bangumi API HTTP error {e.code} for Subject {bgm_id}")
                 return 0
-        except Exception as e:
-            print(f"Error fetching Bangumi episodes for Subject {bgm_id}: {e}")
-            return 0
+        except (urllib.error.URLError, TimeoutError, Exception) as e:
+            wait_time = (2 ** attempt) + (attempt * 0.5)
+            print(f"Error fetching Bangumi episodes for Subject {bgm_id} (attempt {attempt}/{MAX_RETRIES}): {e}. Retrying in {wait_time:.1f}s...")
+            time.sleep(wait_time)
 
     print(f"Fatal: Failed to fetch Bangumi total episodes for Subject {bgm_id} after {MAX_RETRIES} retries. Aborting action.")
     sys.exit(1)
@@ -118,7 +150,7 @@ def fetch_aniskip_episode(mal_id: int, episode: int) -> dict | None:
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            with urllib.request.urlopen(req) as res:
+            with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as res:
                 data = json.loads(res.read().decode("utf-8"))
                 if data.get("found"):
                     return data
@@ -133,9 +165,10 @@ def fetch_aniskip_episode(mal_id: int, episode: int) -> dict | None:
             else:
                 print(f"HTTP error {e.code} for MAL {mal_id} ep {episode}")
                 return None
-        except Exception as e:
-            print(f"Error fetching MAL {mal_id} ep {episode}: {e}")
-            return None
+        except (urllib.error.URLError, TimeoutError, Exception) as e:
+            wait_time = (2 ** attempt) + (attempt * 0.5)
+            print(f"Error fetching MAL {mal_id} ep {episode} (attempt {attempt}/{MAX_RETRIES}): {e}. Retrying in {wait_time:.1f}s...")
+            time.sleep(wait_time)
 
     print(f"Fatal: AniSkip API permanently failed for MAL {mal_id} ep {episode} after {MAX_RETRIES} retries. Aborting action to preserve state.")
     sys.exit(1)
@@ -165,6 +198,28 @@ def format_episode_line(ep: int, op_start: int, op_end: int, ed_start: int, ed_e
     return f"{ep};{op_start};{op_end};{ed_start};{ed_end}"
 
 
+def read_existing_episodes(subject_id: str) -> dict[int, str]:
+    data_file = os.path.join(subject_id, f"{subject_id}.txt")
+    episodes = {}
+    if os.path.exists(data_file):
+        try:
+            with open(data_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split(";")
+                    if len(parts) == 5:
+                        try:
+                            ep = int(parts[0])
+                            episodes[ep] = line
+                        except ValueError:
+                            pass
+        except Exception as e:
+            print(f"Warning: Error reading existing file {data_file}: {e}")
+    return episodes
+
+
 def write_subject_data(subject_id: str, title: str, episodes_dict: dict[int, str]):
     folder = subject_id
     os.makedirs(folder, exist_ok=True)
@@ -186,17 +241,25 @@ def write_subject_data(subject_id: str, title: str, episodes_dict: dict[int, str
 
 def process_anime_sweep(subject_id: str, mal_id: int, title: str, total_eps: int) -> bool:
     """
-    Sweeps from episode 1 to total_eps. Used for ongoing anime and first-time setups.
-    Returns True if we actually fetched any data (or successfully confirmed 0 episodes).
+    Sweeps from episode 1 to total_eps using hybrid caching.
+    Reuses existing valid lines for older episodes (except last 3 episodes which get re-checked).
+    Fetches AniSkip data for missing episodes or recent episodes.
     """
+    existing_episodes = read_existing_episodes(subject_id)
     episodes = {}
 
-    # If there are no episodes (e.g. unreleased), we still want to create the empty file
     if total_eps == 0:
         write_subject_data(subject_id, title, episodes)
         return True
 
+    # Hybrid re-check window: last 3 episodes of total_eps
+    recheck_start_ep = max(1, total_eps - 2)
+
     for current_ep in range(1, total_eps + 1):
+        if current_ep < recheck_start_ep and current_ep in existing_episodes:
+            episodes[current_ep] = existing_episodes[current_ep]
+            continue
+
         aniskip_data = fetch_aniskip_episode(mal_id, current_ep)
         time.sleep(REQUEST_DELAY)
 
@@ -204,6 +267,10 @@ def process_anime_sweep(subject_id: str, mal_id: int, title: str, total_eps: int
             op_s, op_e, ed_s, ed_e = parse_skip_times(aniskip_data)
             if (op_s, op_e, ed_s, ed_e) != (-1, -1, -1, -1):
                 episodes[current_ep] = format_episode_line(current_ep, op_s, op_e, ed_s, ed_e)
+            elif current_ep in existing_episodes:
+                episodes[current_ep] = existing_episodes[current_ep]
+        elif current_ep in existing_episodes:
+            episodes[current_ep] = existing_episodes[current_ep]
 
     write_subject_data(subject_id, title, episodes)
     return True
@@ -217,11 +284,14 @@ def main():
     items = bangumi_data.get("items", [])
     print(f"Total items in bangumi-data: {len(items)}")
 
-    # We still track ongoing state so that if it transitions to completed,
-    # we know to clean it up.
     ongoing_state = state.get("ongoing", {})
+    processed_count = 0
 
     for item in items:
+        if MAX_PROCESS_ITEMS > 0 and processed_count >= MAX_PROCESS_ITEMS:
+            print(f"Batch limit reached ({processed_count}/{MAX_PROCESS_ITEMS} processed). Exiting cleanly to save progress.")
+            break
+
         sites = item.get("sites", [])
         bgm_id = None
         mal_id = None
@@ -251,26 +321,28 @@ def main():
 
         if is_strictly_ended:
             if file_exists:
-                # If strictly finished (passed 90 days) and data file exists, skip entirely
                 if bgm_id_str in ongoing_state:
                     del ongoing_state[bgm_id_str]
                     state["ongoing"] = ongoing_state
                     save_state(state)
                 continue
             else:
-                # First time seeing this completed anime (or folder was manually deleted)
                 total_eps = fetch_bangumi_total_episodes(bgm_id_str)
-                time.sleep(REQUEST_DELAY) # Rate limit for bgm api too
+                time.sleep(REQUEST_DELAY)
                 print(f"[Completed Setup] Subject {bgm_id_str} (MAL {mal_id}): {title} (Total: {total_eps})")
 
                 process_anime_sweep(bgm_id_str, mal_id, title, total_eps)
+                processed_count += 1
 
                 if bgm_id_str in ongoing_state:
                     del ongoing_state[bgm_id_str]
                     state["ongoing"] = ongoing_state
                     save_state(state)
         else:
-            # Ongoing anime OR in 90-day cooldown
+            existing_ongoing_info = ongoing_state.get(bgm_id_str, {})
+            if file_exists and is_ongoing_recently_checked(existing_ongoing_info, max_hours=ONGOING_CHECK_INTERVAL_HOURS):
+                continue
+
             total_eps = fetch_bangumi_total_episodes(bgm_id_str)
             time.sleep(REQUEST_DELAY)
 
@@ -278,17 +350,19 @@ def main():
             print(f"[Ongoing/Cooldown] Subject {bgm_id_str} (MAL {mal_id}): {title} (Total: {total_eps}, End: {end_date_str})")
 
             process_anime_sweep(bgm_id_str, mal_id, title, total_eps)
+            processed_count += 1
 
             ongoing_state[bgm_id_str] = {
                 "mal_id": mal_id,
-                "title": title
+                "title": title,
+                "last_check": datetime.now(timezone.utc).isoformat()
             }
             state["ongoing"] = ongoing_state
             save_state(state)
 
     state["ongoing"] = ongoing_state
     save_state(state)
-    print("Sync complete.")
+    print(f"Sync batch complete. Processed {processed_count} subjects in this run.")
 
 
 if __name__ == "__main__":
