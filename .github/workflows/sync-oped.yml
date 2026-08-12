@@ -7,6 +7,10 @@ on:
     - cron: '*/30 * * * *'
   workflow_dispatch:
 
+concurrency:
+  group: sync-oped
+  cancel-in-progress: false
+
 permissions:
   contents: write
 

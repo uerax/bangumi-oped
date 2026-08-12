@@ -17,8 +17,11 @@ USER_AGENT = "Mozilla/5.0 (compatible; bangumi-oped-sync/1.0)"
 REQUEST_DELAY = float(os.environ.get("REQUEST_DELAY", "0.05"))
 MAX_RETRIES = 5
 TIMEOUT_SECONDS = 15
-# Set MAX_PROCESS_ITEMS to batch initial full sync and avoid Action execution timeout (0 means no limit)
-MAX_PROCESS_ITEMS = int(os.environ.get("MAX_PROCESS_ITEMS", "300"))
+
+# Set MAX_PROCESS_REQUESTS to batch initial full sync by API requests (default: 1000)
+MAX_PROCESS_REQUESTS = int(os.environ.get("MAX_PROCESS_REQUESTS", "1000"))
+# Set MAX_RUN_TIME_SECONDS to exit safely before GitHub Actions interval (default: 840 seconds / 14 minutes)
+MAX_RUN_TIME_SECONDS = int(os.environ.get("MAX_RUN_TIME_SECONDS", "840"))
 # Minimum hours between checking the same ongoing anime during catch-up sweeps
 ONGOING_CHECK_INTERVAL_HOURS = int(os.environ.get("ONGOING_CHECK_INTERVAL_HOURS", "24"))
 
@@ -33,6 +36,9 @@ FORBIDDEN_CHARS = {
     ">": "＞",
     "|": "｜",
 }
+
+global_api_requests = 0
+start_time = time.time()
 
 
 def sanitize_filename(name: str) -> str:
@@ -59,9 +65,11 @@ def save_state(state: dict):
 
 
 def fetch_bangumi_data() -> tuple[dict, str]:
+    global global_api_requests
     print("Fetching bangumi-data...")
     req = urllib.request.Request(BANGUMI_DATA_URL, headers={"User-Agent": USER_AGENT})
     for attempt in range(1, MAX_RETRIES + 1):
+        global_api_requests += 1
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as res:
                 content = res.read()
@@ -117,10 +125,12 @@ def is_ongoing_recently_checked(ongoing_info: dict, max_hours: int) -> bool:
 
 def fetch_bangumi_total_episodes(bgm_id: str) -> int:
     """Fetches total number of normal episodes using Bangumi API."""
+    global global_api_requests
     url = BANGUMI_EPISODES_API.format(bgm_id=bgm_id)
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
 
     for attempt in range(1, MAX_RETRIES + 1):
+        global_api_requests += 1
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as res:
                 data = json.loads(res.read().decode("utf-8"))
@@ -145,10 +155,12 @@ def fetch_bangumi_total_episodes(bgm_id: str) -> int:
 
 
 def fetch_aniskip_episode(mal_id: int, episode: int) -> dict | None:
+    global global_api_requests
     url = ANISKIP_URL.format(mal_id=mal_id, ep=episode)
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
 
     for attempt in range(1, MAX_RETRIES + 1):
+        global_api_requests += 1
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as res:
                 data = json.loads(res.read().decode("utf-8"))
@@ -288,8 +300,10 @@ def main():
     processed_count = 0
 
     for item in items:
-        if MAX_PROCESS_ITEMS > 0 and processed_count >= MAX_PROCESS_ITEMS:
-            print(f"Batch limit reached ({processed_count}/{MAX_PROCESS_ITEMS} processed). Exiting cleanly to save progress.")
+        elapsed_seconds = time.time() - start_time
+        if (MAX_PROCESS_REQUESTS > 0 and global_api_requests >= MAX_PROCESS_REQUESTS) or \
+           (MAX_RUN_TIME_SECONDS > 0 and elapsed_seconds >= MAX_RUN_TIME_SECONDS):
+            print(f"Limit reached ({global_api_requests}/{MAX_PROCESS_REQUESTS} requests, {elapsed_seconds:.1f}s/{MAX_RUN_TIME_SECONDS}s elapsed). Exiting cleanly to save progress.")
             break
 
         sites = item.get("sites", [])
@@ -362,7 +376,8 @@ def main():
 
     state["ongoing"] = ongoing_state
     save_state(state)
-    print(f"Sync batch complete. Processed {processed_count} subjects in this run.")
+    total_elapsed = time.time() - start_time
+    print(f"Sync batch complete. Processed {processed_count} subjects, made {global_api_requests} API requests in {total_elapsed:.1f}s.")
 
 
 if __name__ == "__main__":
