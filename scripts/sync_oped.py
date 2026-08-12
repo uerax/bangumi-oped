@@ -269,8 +269,9 @@ def process_anime_sweep(subject_id: str, mal_id: int, title: str, total_eps: int
 
     for current_ep in range(1, total_eps + 1):
         if current_ep < recheck_start_ep and current_ep in existing_episodes:
-            episodes[current_ep] = existing_episodes[current_ep]
-            continue
+            if "-1" not in existing_episodes[current_ep]:
+                episodes[current_ep] = existing_episodes[current_ep]
+                continue
 
         aniskip_data = fetch_aniskip_episode(mal_id, current_ep)
         time.sleep(REQUEST_DELAY)
