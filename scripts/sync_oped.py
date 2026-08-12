@@ -13,6 +13,8 @@ BANGUMI_DATA_URL = "https://unpkg.com/bangumi-data@0.3/dist/data.json"
 ANISKIP_URL = "https://api.aniskip.com/v2/skip-times/{mal_id}/{ep}?types=op&types=ed&episodeLength=0"
 STATE_FILE = ".state.json"
 USER_AGENT = "Mozilla/5.0 (compatible; bangumi-oped-sync/1.0)"
+REQUEST_DELAY = float(os.environ.get("REQUEST_DELAY", "0.2"))
+MAX_RETRIES = 5
 
 FORBIDDEN_CHARS = {
     ":": "：",
@@ -79,17 +81,27 @@ def is_anime_ended(end_str: str) -> bool:
 def fetch_aniskip_episode(mal_id: int, episode: int) -> dict | None:
     url = ANISKIP_URL.format(mal_id=mal_id, ep=episode)
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    try:
-        with urllib.request.urlopen(req) as res:
-            data = json.loads(res.read().decode("utf-8"))
-            if data.get("found"):
-                return data
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req) as res:
+                data = json.loads(res.read().decode("utf-8"))
+                if data.get("found"):
+                    return data
+                return None
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            elif e.code == 429 or e.code >= 500:
+                wait_time = (2 ** attempt) + (attempt * 0.5)
+                print(f"HTTP {e.code} for MAL {mal_id} ep {episode}. Retrying in {wait_time:.1f}s (attempt {attempt}/{MAX_RETRIES})...")
+                time.sleep(wait_time)
+            else:
+                print(f"HTTP error {e.code} for MAL {mal_id} ep {episode}")
+                return None
+        except Exception as e:
+            print(f"Error fetching MAL {mal_id} ep {episode}: {e}")
             return None
-        print(f"HTTP error {e.code} for MAL {mal_id} ep {episode}")
-    except Exception as e:
-        print(f"Error fetching MAL {mal_id} ep {episode}: {e}")
     return None
 
 
@@ -160,7 +172,7 @@ def process_anime(subject_id: str, mal_id: int, title: str, start_ep: int = 1) -
 
     while True:
         aniskip_data = fetch_aniskip_episode(mal_id, current_ep)
-        time.sleep(0.1)  # Mild rate limiting
+        time.sleep(REQUEST_DELAY)  # Rate limiting delay between requests
 
         if not aniskip_data:
             # If 404 or no data, stop probing
@@ -229,6 +241,8 @@ def main():
                 episodes, _ = process_anime(str(bgm_id), mal_id, title, start_ep=1)
                 if str(bgm_id) in ongoing_state:
                     del ongoing_state[str(bgm_id)]
+                state["ongoing"] = ongoing_state
+                save_state(state)
         else:
             # Ongoing anime
             last_ep = ongoing_state.get(str(bgm_id), {}).get("last_ep", 0)
@@ -242,6 +256,8 @@ def main():
                     "title": title,
                     "last_ep": max_ep,
                 }
+                state["ongoing"] = ongoing_state
+                save_state(state)
 
     state["ongoing"] = ongoing_state
     save_state(state)
