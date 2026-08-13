@@ -25,7 +25,11 @@
 
 ## 1. 目录架构与文件命名
 
-每部番剧在仓库中都对应一个以其 Bangumi **Subject ID** 命名的独立文件夹。
+项目采用 **双分支架构**：
+- **`master` 分支**：仅保存自动化同步脚本、工作流配置与文档说明，保持仓库主页简洁规范。
+- **`data` 分支**：集中存放所有打点数据文件与增量状态文件 (`.state.json`)。
+
+在 `data` 分支中，每部番剧都对应一个以其 Bangumi **Subject ID** 命名的独立文件夹。
 
 ```text
 <Subject_ID>/
@@ -131,7 +135,10 @@
 
 ## 5. 第三方接入与解析示例
 
-调用方只需根据 Bangumi Subject ID 读取对应的 `<Subject_ID>/<Subject_ID>.txt` 文件即可。Python 解析示例：
+数据文件统一存储在 **`data` 分支** 下。在线直接调用 Raw 文件时请指向 `data` 分支路径：
+`https://raw.githubusercontent.com/bangumi-oped/bangumi-oped/data/<Subject_ID>/<Subject_ID>.txt`
+
+若克隆仓库或拉取 `data` 分支，只需根据 Bangumi Subject ID 读取对应的 `<Subject_ID>/<Subject_ID>.txt` 文件即可。Python 解析示例：
 
 ```python
 import os

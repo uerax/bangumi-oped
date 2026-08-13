@@ -12,7 +12,8 @@ from datetime import datetime, timezone, timedelta
 BANGUMI_DATA_URL = "https://unpkg.com/bangumi-data@0.3/dist/data.json"
 BANGUMI_EPISODES_API = "https://api.bgm.tv/v0/episodes?subject_id={bgm_id}&type=0"
 ANISKIP_URL = "https://api.aniskip.com/v2/skip-times/{mal_id}/{ep}?types=op&types=ed&episodeLength=0"
-STATE_FILE = ".state.json"
+DATA_DIR = os.environ.get("DATA_DIR", ".")
+STATE_FILE = os.path.join(DATA_DIR, ".state.json")
 USER_AGENT = "Mozilla/5.0 (compatible; bangumi-oped-sync/1.0)"
 REQUEST_DELAY = float(os.environ.get("REQUEST_DELAY", "0.05"))
 MAX_RETRIES = 5
@@ -211,7 +212,8 @@ def format_episode_line(ep: int, op_start: int, op_end: int, ed_start: int, ed_e
 
 
 def read_existing_episodes(subject_id: str) -> dict[int, str]:
-    data_file = os.path.join(subject_id, f"{subject_id}.txt")
+    folder = os.path.join(DATA_DIR, subject_id)
+    data_file = os.path.join(folder, f"{subject_id}.txt")
     episodes = {}
     if os.path.exists(data_file):
         try:
@@ -233,7 +235,7 @@ def read_existing_episodes(subject_id: str) -> dict[int, str]:
 
 
 def write_subject_data(subject_id: str, title: str, episodes_dict: dict[int, str]):
-    folder = subject_id
+    folder = os.path.join(DATA_DIR, subject_id)
     os.makedirs(folder, exist_ok=True)
     data_file = os.path.join(folder, f"{subject_id}.txt")
 

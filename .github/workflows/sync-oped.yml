@@ -18,8 +18,16 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout master branch
         uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Checkout data branch
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          path: data_workspace
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -28,9 +36,13 @@ jobs:
 
       - name: Run OP/ED Sync Script
         run: python scripts/sync_oped.py
+        env:
+          DATA_DIR: data_workspace
 
-      - name: Commit and push changes
+      - name: Commit and push changes to data branch
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
+          repository: data_workspace
+          branch: data
           commit_message: "chore: auto-sync OP/ED timestamps data"
           file_pattern: "*.txt *.json *"
