@@ -135,10 +135,17 @@
 
 ## 5. 第三方接入与解析示例
 
-数据文件统一存储在 **`data` 分支** 下。在线直接调用 Raw 文件时请指向 `data` 分支路径：
-`https://raw.githubusercontent.com/bangumi-oped/bangumi-oped/data/<Subject_ID>/<Subject_ID>.txt`
+数据文件统一存储在 **`data` 分支** 下。第三方应用推荐通过以下方式在线获取时间戳文件：
 
-若克隆仓库或拉取 `data` 分支，只需根据 Bangumi Subject ID 读取对应的 `<Subject_ID>/<Subject_ID>.txt` 文件即可。Python 解析示例：
+- **jsDelivr CDN（推荐，支持全球加速与国内稳定访问）**：
+  `https://cdn.jsdelivr.net/gh/uerax/bangumi-oped@data/<Subject_ID>/<Subject_ID>.txt`  
+  *示例*：`https://cdn.jsdelivr.net/gh/uerax/bangumi-oped@data/349319/349319.txt`
+
+- **GitHub Raw**：
+  `https://raw.githubusercontent.com/uerax/bangumi-oped/data/<Subject_ID>/<Subject_ID>.txt`  
+  *示例*：`https://raw.githubusercontent.com/uerax/bangumi-oped/data/349319/349319.txt`
+
+若克隆仓库或本地拉取 `data` 分支，只需根据 Bangumi Subject ID 读取对应的 `<Subject_ID>/<Subject_ID>.txt` 文件即可。Python 解析示例：
 
 ```python
 import os
