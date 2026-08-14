@@ -25,6 +25,10 @@ MAX_PROCESS_REQUESTS = int(os.environ.get("MAX_PROCESS_REQUESTS", "1000"))
 MAX_RUN_TIME_SECONDS = int(os.environ.get("MAX_RUN_TIME_SECONDS", "840"))
 # Minimum hours between checking the same ongoing anime during catch-up sweeps
 ONGOING_CHECK_INTERVAL_HOURS = int(os.environ.get("ONGOING_CHECK_INTERVAL_HOURS", "24"))
+# Number of recent episodes to re-check during ongoing sweeps (default: 6 episodes)
+RECHECK_WINDOW = int(os.environ.get("RECHECK_WINDOW", "6"))
+
+INITIAL_SWEEP_ENV = os.environ.get("INITIAL_SWEEP", "1") == "1"
 
 FORBIDDEN_CHARS = {
     ":": "：",
@@ -56,7 +60,7 @@ def load_state() -> dict:
                 return json.load(f)
         except Exception as e:
             print(f"Warning: Failed to load {STATE_FILE}: {e}")
-    return {"bangumi_data_hash": "", "ongoing": {}}
+    return {"bangumi_data_hash": "", "initial_sweep_done": False, "ongoing": {}}
 
 
 def save_state(state: dict):
@@ -211,6 +215,17 @@ def format_episode_line(ep: int, op_start: int, op_end: int, ed_start: int, ed_e
     return f"{ep};{op_start};{op_end};{ed_start};{ed_end}"
 
 
+def parse_episode_line(line: str) -> tuple[int, int, int, int]:
+    """Parses line 'ep;op_s;op_e;ed_s;ed_e' into (op_s, op_e, ed_s, ed_e)."""
+    parts = line.split(";")
+    if len(parts) == 5:
+        try:
+            return int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])
+        except ValueError:
+            pass
+    return -1, -1, -1, -1
+
+
 def read_existing_episodes(subject_id: str) -> dict[int, str]:
     folder = os.path.join(DATA_DIR, subject_id)
     data_file = os.path.join(folder, f"{subject_id}.txt")
@@ -253,11 +268,13 @@ def write_subject_data(subject_id: str, title: str, episodes_dict: dict[int, str
             open(title_file, "a").close()
 
 
-def process_anime_sweep(subject_id: str, mal_id: int, title: str, total_eps: int) -> bool:
+def process_anime_sweep(subject_id: str, mal_id: int, title: str, total_eps: int, is_ongoing_recheck: bool = False) -> bool:
     """
-    Sweeps from episode 1 to total_eps using hybrid caching.
-    Reuses existing valid lines for older episodes (except last 3 episodes which get re-checked).
-    Fetches AniSkip data for missing episodes or recent episodes.
+    Sweeps from episode 1 to total_eps using hybrid 3-tier caching with field-level merging.
+    - Tier 1: Complete episodes (valid OP & ED) outside RECHECK_WINDOW -> Cached permanently.
+    - Tier 2: Recent episodes (last RECHECK_WINDOW eps) -> Always checked via AniSkip.
+    - Tier 3: Incomplete episodes (-1 present) outside window -> Checked during ongoing rechecks.
+    Field-level merge ensures existing valid OP or ED is never lost if AniSkip only has one segment.
     """
     existing_episodes = read_existing_episodes(subject_id)
     episodes = {}
@@ -266,25 +283,46 @@ def process_anime_sweep(subject_id: str, mal_id: int, title: str, total_eps: int
         write_subject_data(subject_id, title, episodes)
         return True
 
-    # Hybrid re-check window: last 3 episodes of total_eps
-    recheck_start_ep = max(1, total_eps - 2)
+    # Recent re-check window: last RECHECK_WINDOW episodes of total_eps
+    recheck_start_ep = max(1, total_eps - RECHECK_WINDOW + 1)
 
     for current_ep in range(1, total_eps + 1):
-        if current_ep < recheck_start_ep and current_ep in existing_episodes:
-            if "-1" not in existing_episodes[current_ep]:
-                episodes[current_ep] = existing_episodes[current_ep]
-                continue
+        old_op_s, old_op_e, old_ed_s, old_ed_e = -1, -1, -1, -1
+        has_existing = current_ep in existing_episodes
+        if has_existing:
+            old_op_s, old_op_e, old_ed_s, old_ed_e = parse_episode_line(existing_episodes[current_ep])
 
+        is_outside_window = current_ep < recheck_start_ep
+        is_complete = (old_op_s != -1 and old_ed_s != -1)
+
+        # Tier 1: Complete episode outside window -> Reuse immediately
+        if is_outside_window and has_existing and is_complete:
+            episodes[current_ep] = existing_episodes[current_ep]
+            continue
+
+        # Tier 3: Incomplete episode outside window on non-recheck runs -> Reuse existing
+        if is_outside_window and has_existing and not is_ongoing_recheck:
+            episodes[current_ep] = existing_episodes[current_ep]
+            continue
+
+        # Tier 2 (Recent window) OR Tier 3 (Ongoing recheck) OR New episode -> Fetch AniSkip
         aniskip_data = fetch_aniskip_episode(mal_id, current_ep)
         time.sleep(REQUEST_DELAY)
 
         if aniskip_data:
-            op_s, op_e, ed_s, ed_e = parse_skip_times(aniskip_data)
-            if (op_s, op_e, ed_s, ed_e) != (-1, -1, -1, -1):
-                episodes[current_ep] = format_episode_line(current_ep, op_s, op_e, ed_s, ed_e)
-            elif current_ep in existing_episodes:
+            new_op_s, new_op_e, new_ed_s, new_ed_e = parse_skip_times(aniskip_data)
+
+            # Field-level merge: Prefer new valid timestamp, fallback to old timestamp
+            final_op_s = new_op_s if new_op_s != -1 else old_op_s
+            final_op_e = new_op_e if new_op_e != -1 else old_op_e
+            final_ed_s = new_ed_s if new_ed_s != -1 else old_ed_s
+            final_ed_e = new_ed_e if new_ed_e != -1 else old_ed_e
+
+            if (final_op_s, final_op_e, final_ed_s, final_ed_e) != (-1, -1, -1, -1):
+                episodes[current_ep] = format_episode_line(current_ep, final_op_s, final_op_e, final_ed_s, final_ed_e)
+            elif has_existing:
                 episodes[current_ep] = existing_episodes[current_ep]
-        elif current_ep in existing_episodes:
+        elif has_existing:
             episodes[current_ep] = existing_episodes[current_ep]
 
     write_subject_data(subject_id, title, episodes)
@@ -302,11 +340,31 @@ def main():
     ongoing_state = state.get("ongoing", {})
     processed_count = 0
 
-    for item in reversed(items):
+    initial_sweep_mode = INITIAL_SWEEP_ENV and not state.get("initial_sweep_done", False)
+    if initial_sweep_mode:
+        print("=== Initial Fast Sweep Mode Active: Existing subject folders will be skipped ===")
+        items_to_process = list(reversed(items))
+    else:
+        # LRU Dynamic Queue: Sort subjects by last_check ASCENDING (oldest checked first)
+        print("=== Maintenance Mode Active: Sorting ongoing subjects by LRU (oldest check first) ===")
+        def get_last_check_time(item):
+            sites = item.get("sites", [])
+            for site in sites:
+                if site.get("site") == "bangumi":
+                    bgm_id_str = str(site.get("id"))
+                    return ongoing_state.get(bgm_id_str, {}).get("last_check", "1970-01-01T00:00:00")
+            return "1970-01-01T00:00:00"
+
+        items_to_process = sorted(items, key=get_last_check_time)
+
+    completed_full_loop = True
+
+    for item in items_to_process:
         elapsed_seconds = time.time() - start_time
         if (MAX_PROCESS_REQUESTS > 0 and global_api_requests >= MAX_PROCESS_REQUESTS) or \
            (MAX_RUN_TIME_SECONDS > 0 and elapsed_seconds >= MAX_RUN_TIME_SECONDS):
             print(f"Limit reached ({global_api_requests}/{MAX_PROCESS_REQUESTS} requests, {elapsed_seconds:.1f}s/{MAX_RUN_TIME_SECONDS}s elapsed). Exiting cleanly to save progress.")
+            completed_full_loop = False
             break
 
         sites = item.get("sites", [])
@@ -327,14 +385,17 @@ def main():
             continue
 
         bgm_id_str = str(bgm_id)
+        data_file = os.path.join(DATA_DIR, bgm_id_str, f"{bgm_id_str}.txt")
+        file_exists = os.path.exists(data_file)
+
+        if initial_sweep_mode and file_exists:
+            continue
 
         title_trans = item.get("titleTranslate", {})
         zh_titles = title_trans.get("zh-Hans", [])
         title = zh_titles[0] if zh_titles else item.get("title", "")
 
         is_strictly_ended = is_anime_ended(item.get("end", ""))
-        data_file = os.path.join(bgm_id_str, f"{bgm_id_str}.txt")
-        file_exists = os.path.exists(data_file)
 
         if is_strictly_ended:
             if file_exists:
@@ -348,7 +409,7 @@ def main():
                 time.sleep(REQUEST_DELAY)
                 print(f"[Completed Setup] Subject {bgm_id_str} (MAL {mal_id}): {title} (Total: {total_eps})")
 
-                process_anime_sweep(bgm_id_str, mal_id, title, total_eps)
+                process_anime_sweep(bgm_id_str, mal_id, title, total_eps, is_ongoing_recheck=False)
                 processed_count += 1
 
                 if bgm_id_str in ongoing_state:
@@ -366,7 +427,7 @@ def main():
             end_date_str = item.get("end", "Unknown")
             print(f"[Ongoing/Cooldown] Subject {bgm_id_str} (MAL {mal_id}): {title} (Total: {total_eps}, End: {end_date_str})")
 
-            process_anime_sweep(bgm_id_str, mal_id, title, total_eps)
+            process_anime_sweep(bgm_id_str, mal_id, title, total_eps, is_ongoing_recheck=True)
             processed_count += 1
 
             ongoing_state[bgm_id_str] = {
@@ -378,6 +439,11 @@ def main():
             save_state(state)
 
     state["ongoing"] = ongoing_state
+
+    if initial_sweep_mode and completed_full_loop:
+        state["initial_sweep_done"] = True
+        print("🎉 Initial fast sweep complete! All subjects have local data files. Switching to standard maintenance mode.")
+
     save_state(state)
     total_elapsed = time.time() - start_time
     print(f"Sync batch complete. Processed {processed_count} subjects, made {global_api_requests} API requests in {total_elapsed:.1f}s.")
