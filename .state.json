@@ -1,5 +1,5 @@
 {
-  "bangumi_data_hash": "eaa0803898dc629759328fd6e7c7f714759771fd3e05c25fd7715af430a2f5e5",
+  "bangumi_data_hash": "60e42b29fc282bf1d1b698b076dab514d7008c3920873e75c0d49982f7d18863",
   "ongoing": {
     "646464": {
       "mal_id": 64107,
@@ -870,6 +870,11 @@
       "mal_id": 18941,
       "title": "巧虎 WAO！",
       "last_check": "2026-08-16T11:02:58.022458+00:00"
+    },
+    "18692": {
+      "mal_id": 8687,
+      "title": "哆啦A梦",
+      "last_check": "2026-08-17T13:53:48.211781+00:00"
     }
   }
 }
