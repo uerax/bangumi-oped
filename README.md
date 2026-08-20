@@ -4,7 +4,7 @@
 
 `bangumi-oped` 是一个开源的动漫番剧片头（OP）与片尾（ED）跳过时间戳数据库。项目以 [Bangumi 番组计划](https://bgm.tv) 的 **Subject ID** 作为主键索引，旨在为各类第三方播放器、媒体服务器插件（如 Jellyfin/Emby/Plex 插件）、浏览器扩展及跳过脚本提供统一、标准化的 OP/ED 时间数据源。
 
-通过项目内置的 GitHub Action，每周会自动关联 `bangumi-data` 并拉取 [AniSkip](https://aniskip.com) 的最新跳过打点数据进行增量同步。
+通过项目内置的 GitHub Action，每 2 天会自动关联 `bangumi-data` 并拉取 [AniSkip](https://aniskip.com) 的最新跳过打点数据进行增量同步。
 
 ---
 
@@ -129,7 +129,7 @@
 2. **打点数据源**：调用 [AniSkip API](https://aniskip.com) 拉取最新的 OP/ED 范围。
 3. **高效拉取与增量同步**：
    - **已完结番剧**：本地存在数据文件的已完结作品直接跳过，零重复网络请求。
-   - **连载中番剧**：在 `.state.json` 中追踪增量集数，每周尝试探测新发行的集数打点。
+   - **连载中番剧**：在 `.state.json` 中追踪增量集数，每 2 天尝试探测新发行的集数打点。
 
 ---
 
