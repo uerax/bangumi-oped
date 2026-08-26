@@ -27,6 +27,8 @@ MAX_RUN_TIME_SECONDS = int(os.environ.get("MAX_RUN_TIME_SECONDS", "840"))
 ONGOING_CHECK_INTERVAL_HOURS = int(os.environ.get("ONGOING_CHECK_INTERVAL_HOURS", "24"))
 # Number of recent episodes to re-check during ongoing sweeps (default: 6 episodes)
 RECHECK_WINDOW = int(os.environ.get("RECHECK_WINDOW", "6"))
+# Maximum age of anime in days based on start date (default: 365 days / 1 year, set 0 to disable)
+MAX_ANIME_AGE_DAYS = int(os.environ.get("MAX_ANIME_AGE_DAYS", "365"))
 
 INITIAL_SWEEP_ENV = os.environ.get("INITIAL_SWEEP", "1") == "1"
 
@@ -90,29 +92,48 @@ def fetch_bangumi_data() -> tuple[dict, str]:
     sys.exit(1)
 
 
+def parse_iso_date(date_str: str) -> datetime | None:
+    if not date_str:
+        return None
+    try:
+        clean = date_str.replace("Z", "+00:00").strip()
+        if len(clean) == 4 and clean.isdigit():
+            clean += "-01-01"
+        elif len(clean) == 7 and re.match(r"^\d{4}-\d{2}$", clean):
+            clean += "-01"
+
+        dt = datetime.fromisoformat(clean)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
 def is_anime_ended(end_str: str) -> bool:
     """
     Returns True ONLY if the anime ended more than 90 days ago.
     Otherwise (ongoing, ended recently, or unknown/unparseable date), returns False.
     """
-    if not end_str:
+    end_date = parse_iso_date(end_str)
+    if not end_date:
         return False
-    try:
-        end_clean = end_str.replace("Z", "+00:00").strip()
-        if len(end_clean) == 4 and end_clean.isdigit():
-            end_clean += "-01-01"
-        elif len(end_clean) == 7 and re.match(r"^\d{4}-\d{2}$", end_clean):
-            end_clean += "-01"
+    seal_date = datetime.now(timezone.utc) - timedelta(days=90)
+    return end_date <= seal_date
 
-        end_date = datetime.fromisoformat(end_clean)
-        if end_date.tzinfo is None:
-            end_date = end_date.replace(tzinfo=timezone.utc)
 
-        seal_date = datetime.now(timezone.utc) - timedelta(days=90)
-        return end_date <= seal_date
-    except Exception as e:
-        print(f"Warning: Failed to parse end date '{end_str}': {e}. Treating as ongoing/cooldown.")
+def is_anime_too_old(begin_str: str, max_age_days: int) -> bool:
+    """
+    Returns True if the anime started more than max_age_days ago.
+    If max_age_days <= 0 or begin_str is missing/unparseable, returns False.
+    """
+    if max_age_days <= 0:
         return False
+    begin_date = parse_iso_date(begin_str)
+    if not begin_date:
+        return False
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+    return begin_date < cutoff_date
 
 
 def is_ongoing_recently_checked(ongoing_info: dict, max_hours: int) -> bool:
@@ -337,7 +358,32 @@ def main():
     items = bangumi_data.get("items", [])
     print(f"Total items in bangumi-data: {len(items)}")
 
+    # Filter items by MAX_ANIME_AGE_DAYS (default: 730 days / 2 years)
+    if MAX_ANIME_AGE_DAYS > 0:
+        filtered_items = [
+            it for it in items
+            if not is_anime_too_old(it.get("begin", ""), MAX_ANIME_AGE_DAYS)
+        ]
+        print(f"Filtered to {len(filtered_items)} items within the last {MAX_ANIME_AGE_DAYS} days ({MAX_ANIME_AGE_DAYS / 365:.1f} years).")
+        items = filtered_items
+
     ongoing_state = state.get("ongoing", {})
+
+    # Purge ongoing entries that are no longer in filtered item list
+    valid_bgm_ids = set()
+    for it in items:
+        for s in it.get("sites", []):
+            if s.get("site") == "bangumi":
+                valid_bgm_ids.add(str(s.get("id")))
+
+    purged_keys = [k for k in ongoing_state if k not in valid_bgm_ids]
+    if purged_keys:
+        print(f"Purging {len(purged_keys)} old/filtered ongoing entries from state tracking.")
+        for k in purged_keys:
+            del ongoing_state[k]
+        state["ongoing"] = ongoing_state
+        save_state(state)
+
     processed_count = 0
 
     initial_sweep_mode = INITIAL_SWEEP_ENV and not state.get("initial_sweep_done", False)

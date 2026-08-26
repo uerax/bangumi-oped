@@ -19,6 +19,7 @@ The repository uses Python 3 standard library exclusively (no external pip depen
   - `MAX_RUN_TIME_SECONDS`: Runtime limit in seconds before clean exit (Default: `840` / 14 mins).
   - `ONGOING_CHECK_INTERVAL_HOURS`: Cooldown in hours between re-checking ongoing anime (Default: `24`).
   - `RECHECK_WINDOW`: Number of recent episodes to re-check during sweeps (Default: `6`).
+  - `MAX_ANIME_AGE_DAYS`: Maximum age of anime in days based on start date (Default: `365` / 1 year, `0` to disable). Filters out older legacy shows and long-running continuous series.
 
 ## Dual-Branch Architecture
 
@@ -35,11 +36,12 @@ The repository operates across two git branches:
 3. **AniSkip API** (`api.aniskip.com/v2/skip-times`): Retrieves OP/ED timestamp intervals by MAL ID and episode number.
 
 ### Lifecycle & Caching Rules
+- **Anime Age Filtering**: Automatically filters out anime whose start date (`begin`) is older than `MAX_ANIME_AGE_DAYS` (default: 365 days / 1 year), effectively excluding older legacy shows and multi-decade continuous series (e.g. Detective Conan, One Piece, Sazae-san). Obsolete ongoing state entries for filtered anime are purged automatically.
 - **Initial Fast Sweep Mode**: When `INITIAL_SWEEP=1` and `initial_sweep_done` is `false` in `.state.json`, any existing subject folder is skipped to dedicate 100% of request quota to populating missing subjects. Once all subjects are scanned without hitting request limits, `initial_sweep_done` is automatically set to `true`.
 - **Sealed (Completed) Anime**: Ended >90 days ago with data present; skipped entirely to eliminate redundant requests.
 - **LRU Dynamic Queue Maintenance**: In maintenance mode (`initial_sweep_done=true`), ongoing subjects are sorted by `last_check` timestamp ascending (oldest checked first). Checked subjects update `last_check` and move to the end of the queue, ensuring all ongoing subjects are polled fairly without starvation.
 - **Ongoing / Cooldown Anime**: Airing anime or ended <=90 days ago; re-checked if last check was prior to `ONGOING_CHECK_INTERVAL_HOURS`.
-- **Smart 3-Tier Caching & Field-Level Merge**: Complete episodes (valid OP & ED) outside `RECHECK_WINDOW` are locked permanently. Recent episodes inside `RECHECK_WINDOW` (default: 6 eps) are always checked. Incomplete episodes (`-1` present) outside the window are re-checked during LRU ongoing sweeps. Field-level merging ensures existing valid OP or ED timestamps are preserved if AniSkip only returns one segment.
+- **Smart 3-Tier Caching & Field-Level Merge**: Complete episodes (valid OP & ED) outside `RECHECK_WINDOW` are locked permanently. Recent episodes inside `RECHECK_WINDOW` (default: 6 eps) are always checked. Incomplete episodes (`-1` present) outside the window are re-checked during LRU ongoing sweeps. Field-level merging ensures existing valid OP or ED timestamps are preserved if AniSkip only has one segment.
 - **State File (`.state.json`)**: Persists `bangumi-data_hash` and timestamps/metadata for active `ongoing` entries.
 - **Fault Tolerance**: API calls retry up to 5 times with exponential backoff on HTTP 429/5xx errors. Unrecoverable failures invoke `sys.exit(1)` to abort without committing corrupted state.
 
