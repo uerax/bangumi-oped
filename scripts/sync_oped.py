@@ -149,7 +149,7 @@ def is_ongoing_recently_checked(ongoing_info: dict, max_hours: int) -> bool:
         return False
 
 
-def fetch_bangumi_total_episodes(bgm_id: str) -> int:
+def fetch_bangumi_total_episodes(bgm_id: str) -> int | None:
     """Fetches total number of normal episodes using Bangumi API."""
     global global_api_requests
     url = BANGUMI_EPISODES_API.format(bgm_id=bgm_id)
@@ -176,8 +176,8 @@ def fetch_bangumi_total_episodes(bgm_id: str) -> int:
             print(f"Error fetching Bangumi episodes for Subject {bgm_id} (attempt {attempt}/{MAX_RETRIES}): {e}. Retrying in {wait_time:.1f}s...")
             time.sleep(wait_time)
 
-    print(f"Fatal: Failed to fetch Bangumi total episodes for Subject {bgm_id} after {MAX_RETRIES} retries. Aborting action.")
-    sys.exit(1)
+    print(f"Warning: Failed to fetch Bangumi total episodes for Subject {bgm_id} after {MAX_RETRIES} retries. Skipping subject.")
+    return None
 
 
 def fetch_aniskip_episode(mal_id: int, episode: int) -> dict | None:
@@ -208,8 +208,8 @@ def fetch_aniskip_episode(mal_id: int, episode: int) -> dict | None:
             print(f"Error fetching MAL {mal_id} ep {episode} (attempt {attempt}/{MAX_RETRIES}): {e}. Retrying in {wait_time:.1f}s...")
             time.sleep(wait_time)
 
-    print(f"Fatal: AniSkip API permanently failed for MAL {mal_id} ep {episode} after {MAX_RETRIES} retries. Aborting action to preserve state.")
-    sys.exit(1)
+    print(f"Warning: AniSkip API permanently failed for MAL {mal_id} ep {episode} after {MAX_RETRIES} retries. Skipping episode.")
+    return None
 
 
 def parse_skip_times(aniskip_data: dict) -> tuple[int, int, int, int]:
@@ -452,6 +452,8 @@ def main():
                 continue
             else:
                 total_eps = fetch_bangumi_total_episodes(bgm_id_str)
+                if total_eps is None:
+                    continue
                 time.sleep(REQUEST_DELAY)
                 print(f"[Completed Setup] Subject {bgm_id_str} (MAL {mal_id}): {title} (Total: {total_eps})")
 
@@ -468,6 +470,8 @@ def main():
                 continue
 
             total_eps = fetch_bangumi_total_episodes(bgm_id_str)
+            if total_eps is None:
+                continue
             time.sleep(REQUEST_DELAY)
 
             end_date_str = item.get("end", "Unknown")

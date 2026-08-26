@@ -43,7 +43,7 @@ The repository operates across two git branches:
 - **Ongoing / Cooldown Anime**: Airing anime or ended <=90 days ago; re-checked if last check was prior to `ONGOING_CHECK_INTERVAL_HOURS`.
 - **Smart 3-Tier Caching & Field-Level Merge**: Complete episodes (valid OP & ED) outside `RECHECK_WINDOW` are locked permanently. Recent episodes inside `RECHECK_WINDOW` (default: 6 eps) are always checked. Incomplete episodes (`-1` present) outside the window are re-checked during LRU ongoing sweeps. Field-level merging ensures existing valid OP or ED timestamps are preserved if AniSkip only has one segment.
 - **State File (`.state.json`)**: Persists `bangumi-data_hash` and timestamps/metadata for active `ongoing` entries.
-- **Fault Tolerance**: API calls retry up to 5 times with exponential backoff on HTTP 429/5xx errors. Unrecoverable failures invoke `sys.exit(1)` to abort without committing corrupted state.
+- **Fault Tolerance**: API calls retry up to 5 times with exponential backoff on HTTP 429/5xx errors. Individual episode/subject query failures are logged as warnings and skipped without crashing the entire batch, preserving all completed work and state.
 
 ## Repository Data Conventions
 
