@@ -25,8 +25,6 @@ MAX_PROCESS_REQUESTS = int(os.environ.get("MAX_PROCESS_REQUESTS", "1000"))
 MAX_RUN_TIME_SECONDS = int(os.environ.get("MAX_RUN_TIME_SECONDS", "840"))
 # Minimum hours between checking the same ongoing anime during catch-up sweeps
 ONGOING_CHECK_INTERVAL_HOURS = int(os.environ.get("ONGOING_CHECK_INTERVAL_HOURS", "24"))
-# Number of recent episodes to re-check during ongoing sweeps (default: 6 episodes)
-RECHECK_WINDOW = int(os.environ.get("RECHECK_WINDOW", "6"))
 # Maximum age of anime in days based on start date (default: 365 days / 1 year, set 0 to disable)
 MAX_ANIME_AGE_DAYS = int(os.environ.get("MAX_ANIME_AGE_DAYS", "365"))
 
@@ -291,21 +289,15 @@ def write_subject_data(subject_id: str, title: str, episodes_dict: dict[int, str
 
 def process_anime_sweep(subject_id: str, mal_id: int, title: str, total_eps: int, is_ongoing_recheck: bool = False) -> bool:
     """
-    Sweeps from episode 1 to total_eps using hybrid 3-tier caching with field-level merging.
-    - Tier 1: Complete episodes (valid OP & ED) outside RECHECK_WINDOW -> Cached permanently.
-    - Tier 2: Recent episodes (last RECHECK_WINDOW eps) -> Always checked via AniSkip.
-    - Tier 3: Incomplete episodes (-1 present) outside window -> Checked during ongoing rechecks.
-    Field-level merge ensures existing valid OP or ED is never lost if AniSkip only has one segment.
+    保留所有已存在的有效字段（!= -1），仅对缺失部分（== -1）或新集数尝试用 AniSkip 补全。
     """
     existing_episodes = read_existing_episodes(subject_id)
-    episodes = {}
+    episodes = dict(existing_episodes)
 
     if total_eps == 0:
-        write_subject_data(subject_id, title, episodes)
+        if not episodes:
+            write_subject_data(subject_id, title, episodes)
         return True
-
-    # Recent re-check window: last RECHECK_WINDOW episodes of total_eps
-    recheck_start_ep = max(1, total_eps - RECHECK_WINDOW + 1)
 
     for current_ep in range(1, total_eps + 1):
         old_op_s, old_op_e, old_ed_s, old_ed_e = -1, -1, -1, -1
@@ -313,38 +305,31 @@ def process_anime_sweep(subject_id: str, mal_id: int, title: str, total_eps: int
         if has_existing:
             old_op_s, old_op_e, old_ed_s, old_ed_e = parse_episode_line(existing_episodes[current_ep])
 
-        is_outside_window = current_ep < recheck_start_ep
-        is_complete = (old_op_s != -1 and old_ed_s != -1)
+        has_op = (old_op_s != -1 and old_op_e != -1)
+        has_ed = (old_ed_s != -1 and old_ed_e != -1)
 
-        # Tier 1: Complete episode outside window -> Reuse immediately
-        if is_outside_window and has_existing and is_complete:
-            episodes[current_ep] = existing_episodes[current_ep]
+        # 只要 OP 和 ED 都已经有值，一律跳过
+        if has_existing and has_op and has_ed:
             continue
 
-        # Tier 3: Incomplete episode outside window on non-recheck runs -> Reuse existing
-        if is_outside_window and has_existing and not is_ongoing_recheck:
-            episodes[current_ep] = existing_episodes[current_ep]
+        # 非 ongoing_recheck 模式下，已有记录的不重复请求
+        if has_existing and not is_ongoing_recheck:
             continue
 
-        # Tier 2 (Recent window) OR Tier 3 (Ongoing recheck) OR New episode -> Fetch AniSkip
         aniskip_data = fetch_aniskip_episode(mal_id, current_ep)
         time.sleep(REQUEST_DELAY)
 
         if aniskip_data:
             new_op_s, new_op_e, new_ed_s, new_ed_e = parse_skip_times(aniskip_data)
 
-            # Field-level merge: Prefer new valid timestamp, fallback to old timestamp
-            final_op_s = new_op_s if new_op_s != -1 else old_op_s
-            final_op_e = new_op_e if new_op_e != -1 else old_op_e
-            final_ed_s = new_ed_s if new_ed_s != -1 else old_ed_s
-            final_ed_e = new_ed_e if new_ed_e != -1 else old_ed_e
+            # 优先保留本地已有数据 (old_*)，只有当本地为 -1 时才用 API 新数据填补
+            final_op_s = old_op_s if has_op else new_op_s
+            final_op_e = old_op_e if has_op else new_op_e
+            final_ed_s = old_ed_s if has_ed else new_ed_s
+            final_ed_e = old_ed_e if has_ed else new_ed_e
 
             if (final_op_s, final_op_e, final_ed_s, final_ed_e) != (-1, -1, -1, -1):
                 episodes[current_ep] = format_episode_line(current_ep, final_op_s, final_op_e, final_ed_s, final_ed_e)
-            elif has_existing:
-                episodes[current_ep] = existing_episodes[current_ep]
-        elif has_existing:
-            episodes[current_ep] = existing_episodes[current_ep]
 
     write_subject_data(subject_id, title, episodes)
     return True
@@ -358,7 +343,7 @@ def main():
     items = bangumi_data.get("items", [])
     print(f"Total items in bangumi-data: {len(items)}")
 
-    # Filter items by MAX_ANIME_AGE_DAYS (default: 730 days / 2 years)
+    # Filter items by MAX_ANIME_AGE_DAYS (default: 365 days / 1 year)
     if MAX_ANIME_AGE_DAYS > 0:
         filtered_items = [
             it for it in items
